@@ -1,6 +1,7 @@
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
+import { escapeCsv, parseCsv } from "./dictionaryCsv.js";
 import { db, dbPath, initializeDatabase, mapLesson, mapRow, mapUser } from "./db.js";
 
 const app = express();
@@ -291,6 +292,97 @@ function findDictionaryMatch(text, from, to) {
   return "";
 }
 
+function importDictionaryCsv(csvText) {
+  const rows = parseCsv(String(csvText || "").replace(/^\uFEFF/, ""));
+  if (rows.length === 0) {
+    throw new Error("CSV file is empty.");
+  }
+
+  const [header, ...dataRows] = rows;
+  const englishIndex = header.findIndex((value) => value.trim().toLowerCase() === "english_word");
+  const garoIndex = header.findIndex((value) => value.trim().toLowerCase() === "garo_word");
+  const notesIndex = header.findIndex((value) => value.trim().toLowerCase() === "notes");
+
+  if (englishIndex === -1 || garoIndex === -1) {
+    throw new Error("CSV must include english_word and garo_word columns.");
+  }
+
+  const existing = new Set(
+    db.prepare(`
+      SELECT lower(trim(english_word)) AS english_word, lower(trim(garo_word)) AS garo_word
+      FROM dictionary_entries
+    `).all().map((row) => `${row.english_word}|||${row.garo_word}`)
+  );
+
+  const insert = db.prepare(`
+    INSERT INTO dictionary_entries (english_word, garo_word, notes, is_active, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, ?)
+  `);
+
+  let inserted = 0;
+  let skipped = 0;
+  const timestamp = now();
+
+  db.exec("BEGIN");
+  try {
+    for (const values of dataRows) {
+      const englishWord = String(values[englishIndex] || "").trim();
+      const garoWord = String(values[garoIndex] || "").trim();
+      const notes = notesIndex >= 0 ? String(values[notesIndex] || "").trim() : "";
+
+      if (!englishWord || !garoWord) {
+        skipped += 1;
+        continue;
+      }
+
+      const key = `${englishWord.toLowerCase()}|||${garoWord.toLowerCase()}`;
+      if (existing.has(key)) {
+        skipped += 1;
+        continue;
+      }
+
+      insert.run(englishWord, garoWord, notes, timestamp, timestamp);
+      existing.add(key);
+      inserted += 1;
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+
+  return {
+    inserted,
+    skipped,
+    total: db.prepare("SELECT COUNT(*) AS count FROM dictionary_entries").get().count
+  };
+}
+
+function exportDictionaryCsv() {
+  const rows = db.prepare(`
+    SELECT id, english_word, garo_word, notes
+    FROM dictionary_entries
+    ORDER BY id ASC
+  `).all();
+
+  const csvLines = [
+    ["id", "english_word", "garo_word", "notes"].join(","),
+    ...rows.map((row) =>
+      [
+        escapeCsv(row.id),
+        escapeCsv(row.english_word),
+        escapeCsv(row.garo_word),
+        escapeCsv(row.notes)
+      ].join(",")
+    )
+  ];
+
+  return {
+    csv: `${csvLines.join("\n")}\n`,
+    count: rows.length
+  };
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "garo-backend", database: dbPath });
 });
@@ -426,6 +518,33 @@ app.get("/api/admin/dashboard/", requireUser, requireAdmin, (_req, res) => {
       total_chatbot_questions: adminKnowledge.length
     }
   });
+});
+
+app.post("/api/admin/dictionary/import/", requireUser, requireAdmin, (req, res) => {
+  try {
+    const csv = String(req.body?.csv || "");
+    if (!csv.trim()) {
+      return res.status(400).json({ error: "CSV content is required." });
+    }
+
+    const result = importDictionaryCsv(csv);
+    const items = db.prepare("SELECT * FROM dictionary_entries ORDER BY id ASC").all().map(mapRow);
+    return res.status(201).json({
+      ...result,
+      items
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not import dictionary CSV." });
+  }
+});
+
+app.get("/api/admin/dictionary/export/", requireUser, requireAdmin, (_req, res) => {
+  const { csv, count } = exportDictionaryCsv();
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename=\"dictionary-export-${dateStamp}.csv\"`);
+  res.setHeader("X-Total-Rows", String(count));
+  res.send(csv);
 });
 
 app.get("/api/admin/:section/", requireUser, requireAdmin, (req, res) => {

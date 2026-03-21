@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "dictionary:import": "node scripts/import-dictionary.js",
+    "dictionary:export": "node scripts/export-dictionary.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
