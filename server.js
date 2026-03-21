@@ -60,6 +60,8 @@ const ADMIN_SECTION_CONFIG = {
     getSql: "SELECT * FROM users WHERE id = ?",
     deleteSql: "DELETE FROM users WHERE id = ?",
     allowCreate: false,
+    csvFields: ["username", "email", "password", "is_active", "is_admin"],
+    csvDefaults: { password: "", is_active: 1, is_admin: 0 },
     map: (row) => publicUser(mapUser(row)),
     update(record, body) {
       const next = {
@@ -81,6 +83,8 @@ const ADMIN_SECTION_CONFIG = {
     getSql: "SELECT * FROM dictionary_entries WHERE id = ?",
     deleteSql: "DELETE FROM dictionary_entries WHERE id = ?",
     allowCreate: true,
+    csvFields: ["english_word", "garo_word", "notes", "is_active"],
+    csvDefaults: { notes: "", is_active: 1 },
     map: mapRow,
     create(body) {
       const timestamp = now();
@@ -117,6 +121,8 @@ const ADMIN_SECTION_CONFIG = {
     getSql: "SELECT * FROM lessons WHERE id = ?",
     deleteSql: "DELETE FROM lessons WHERE id = ?",
     allowCreate: true,
+    csvFields: ["title", "topic", "explanation", "sort_order", "is_active"],
+    csvDefaults: { sort_order: 0, is_active: 1 },
     map: mapLesson,
     create(body) {
       const explanation = String(body.explanation || "").trim();
@@ -201,6 +207,8 @@ const ADMIN_SECTION_CONFIG = {
     getSql: "SELECT * FROM g2_knowledge WHERE id = ?",
     deleteSql: "DELETE FROM g2_knowledge WHERE id = ?",
     allowCreate: true,
+    csvFields: ["question", "answer", "is_active"],
+    csvDefaults: { is_active: 1 },
     map: mapRow,
     create(body) {
       const timestamp = now();
@@ -383,6 +391,189 @@ function exportDictionaryCsv() {
   };
 }
 
+function normalizeCsvBoolean(value, fallback = 1) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "") return fallback ? 1 : 0;
+  if (["1", "true", "yes", "y", "active", "admin"].includes(normalized)) return 1;
+  if (["0", "false", "no", "n", "inactive", "standard"].includes(normalized)) return 0;
+  return fallback ? 1 : 0;
+}
+
+function importSectionCsv(section, csvText) {
+  const config = ADMIN_SECTION_CONFIG[section];
+  if (!config?.csvFields?.length) {
+    throw new Error("CSV import is not supported for this section.");
+  }
+
+  const rows = parseCsv(String(csvText || "").replace(/^\uFEFF/, ""));
+  if (rows.length === 0) {
+    throw new Error("CSV file is empty.");
+  }
+
+  const [header, ...dataRows] = rows;
+  const indexes = Object.fromEntries(
+    config.csvFields.map((field) => [field, header.findIndex((value) => value.trim().toLowerCase() === field)])
+  );
+
+  const requiredFields = config.csvFields.filter((field) => !(field in (config.csvDefaults || {})));
+  const missingFields = requiredFields.filter((field) => indexes[field] === -1);
+  if (missingFields.length > 0) {
+    throw new Error(`CSV is missing required columns: ${missingFields.join(", ")}`);
+  }
+
+  let inserted = 0;
+  let skipped = 0;
+  const timestamp = now();
+
+  const getValue = (values, field) => {
+    const index = indexes[field];
+    if (index === -1) return config.csvDefaults?.[field];
+    return values[index];
+  };
+
+  db.exec("BEGIN");
+  try {
+    for (const values of dataRows) {
+      if (section === "dictionary") {
+        const englishWord = String(getValue(values, "english_word") || "").trim();
+        const garoWord = String(getValue(values, "garo_word") || "").trim();
+        const notes = String(getValue(values, "notes") || "").trim();
+        const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
+        if (!englishWord || !garoWord) {
+          skipped += 1;
+          continue;
+        }
+        const exists = db.prepare(`
+          SELECT id FROM dictionary_entries
+          WHERE lower(trim(english_word)) = lower(trim(?))
+            AND lower(trim(garo_word)) = lower(trim(?))
+          LIMIT 1
+        `).get(englishWord, garoWord);
+        if (exists) {
+          skipped += 1;
+          continue;
+        }
+        db.prepare(`
+          INSERT INTO dictionary_entries (english_word, garo_word, notes, is_active, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(englishWord, garoWord, notes, isActive, timestamp, timestamp);
+        inserted += 1;
+        continue;
+      }
+
+      if (section === "lessons") {
+        const title = String(getValue(values, "title") || "").trim();
+        const topic = String(getValue(values, "topic") || "").trim();
+        const explanation = String(getValue(values, "explanation") || "").trim();
+        const sortOrder = Number.parseInt(String(getValue(values, "sort_order") || "0"), 10) || 0;
+        const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
+        if (!title || !topic || !explanation) {
+          skipped += 1;
+          continue;
+        }
+        const exists = db.prepare(`
+          SELECT id FROM lessons
+          WHERE lower(trim(title)) = lower(trim(?))
+            AND lower(trim(topic)) = lower(trim(?))
+          LIMIT 1
+        `).get(title, topic);
+        if (exists) {
+          skipped += 1;
+          continue;
+        }
+        db.prepare(`
+          INSERT INTO lessons (title, topic, explanation, content_json, sort_order, is_active, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(title, topic, explanation, JSON.stringify([{ english: explanation }]), sortOrder, isActive, timestamp, timestamp);
+        inserted += 1;
+        continue;
+      }
+
+      if (section === "g2") {
+        const question = String(getValue(values, "question") || "").trim();
+        const answer = String(getValue(values, "answer") || "").trim();
+        const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
+        if (!question || !answer) {
+          skipped += 1;
+          continue;
+        }
+        const exists = db.prepare(`
+          SELECT id FROM g2_knowledge
+          WHERE lower(trim(question)) = lower(trim(?))
+          LIMIT 1
+        `).get(question);
+        if (exists) {
+          skipped += 1;
+          continue;
+        }
+        db.prepare(`
+          INSERT INTO g2_knowledge (question, answer, is_active, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(question, answer, isActive, timestamp, timestamp);
+        inserted += 1;
+        continue;
+      }
+
+      if (section === "users") {
+        const username = String(getValue(values, "username") || "").trim();
+        const email = String(getValue(values, "email") || "").trim();
+        const password = String(getValue(values, "password") || "").trim();
+        const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
+        const isAdmin = normalizeCsvBoolean(getValue(values, "is_admin"), 0);
+        if (!username || !email || !password) {
+          skipped += 1;
+          continue;
+        }
+        const exists = db.prepare(`
+          SELECT id FROM users
+          WHERE lower(trim(username)) = lower(trim(?))
+             OR lower(trim(email)) = lower(trim(?))
+          LIMIT 1
+        `).get(username, email);
+        if (exists) {
+          skipped += 1;
+          continue;
+        }
+        db.prepare(`
+          INSERT INTO users (username, email, password, is_active, is_admin, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(username, email, password, isActive, isAdmin, timestamp, timestamp);
+        inserted += 1;
+      }
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+
+  return {
+    inserted,
+    skipped,
+    items: db.prepare(config.listSql).all().map(config.map)
+  };
+}
+
+function exportSectionCsv(section) {
+  const config = ADMIN_SECTION_CONFIG[section];
+  if (!config?.csvFields?.length) {
+    throw new Error("CSV export is not supported for this section.");
+  }
+
+  const rows = db.prepare(config.listSql).all();
+  const csvLines = [
+    ["id", ...config.csvFields].join(","),
+    ...rows.map((row) =>
+      [escapeCsv(row.id), ...config.csvFields.map((field) => escapeCsv(row[field]))].join(",")
+    )
+  ];
+
+  return {
+    csv: `${csvLines.join("\n")}\n`,
+    count: rows.length
+  };
+}
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "garo-backend", database: dbPath });
 });
@@ -545,6 +736,38 @@ app.get("/api/admin/dictionary/export/", requireUser, requireAdmin, (_req, res) 
   res.setHeader("Content-Disposition", `attachment; filename=\"dictionary-export-${dateStamp}.csv\"`);
   res.setHeader("X-Total-Rows", String(count));
   res.send(csv);
+});
+
+app.post("/api/admin/:section/import/", requireUser, requireAdmin, (req, res) => {
+  try {
+    const { section } = req.params;
+    const csv = String(req.body?.csv || "");
+    if (!csv.trim()) {
+      return res.status(400).json({ error: "CSV content is required." });
+    }
+    const result = importSectionCsv(section, csv);
+    return res.status(201).json({
+      inserted: result.inserted,
+      skipped: result.skipped,
+      items: result.items
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not import CSV." });
+  }
+});
+
+app.get("/api/admin/:section/export/", requireUser, requireAdmin, (req, res) => {
+  try {
+    const { section } = req.params;
+    const { csv, count } = exportSectionCsv(section);
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=\"${section}-export-${dateStamp}.csv\"`);
+    res.setHeader("X-Total-Rows", String(count));
+    return res.send(csv);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not export CSV." });
+  }
 });
 
 app.get("/api/admin/:section/", requireUser, requireAdmin, (req, res) => {
