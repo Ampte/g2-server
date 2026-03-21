@@ -150,7 +150,7 @@ export function initializeDatabase() {
     db.prepare(`
       INSERT INTO home_ads (image_url, description, sort_order, is_active, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run("/nokpante.jpg", "Nokpante, a traditional house of Garo boys.", 1, 1, now(), now());
+    `).run("/nokpante.jpg", "Nokachik, a traditional house of Garos.", 1, 1, now(), now());
   }
 
   const g2Count = db.prepare("SELECT COUNT(*) AS count FROM g2_knowledge").get().count;
