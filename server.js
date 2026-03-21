@@ -121,7 +121,7 @@ const ADMIN_SECTION_CONFIG = {
     getSql: "SELECT * FROM lessons WHERE id = ?",
     deleteSql: "DELETE FROM lessons WHERE id = ?",
     allowCreate: true,
-    csvFields: ["title", "topic", "explanation", "sort_order", "is_active"],
+    csvFields: ["title", "topic", "explanation"],
     csvDefaults: { sort_order: 0, is_active: 1 },
     map: mapLesson,
     create(body) {
@@ -465,8 +465,8 @@ function importSectionCsv(section, csvText) {
         const title = String(getValue(values, "title") || "").trim();
         const topic = String(getValue(values, "topic") || "").trim();
         const explanation = String(getValue(values, "explanation") || "").trim();
-        const sortOrder = Number.parseInt(String(getValue(values, "sort_order") || "0"), 10) || 0;
-        const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
+        const sortOrder = Number.parseInt(String(config.csvDefaults?.sort_order || "0"), 10) || 0;
+        const isActive = normalizeCsvBoolean(config.csvDefaults?.is_active, 1);
         if (!title || !topic || !explanation) {
           skipped += 1;
           continue;
