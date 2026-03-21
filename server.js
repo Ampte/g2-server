@@ -52,6 +52,118 @@ function publicUser(user) {
   };
 }
 
+const ADMIN_SECTION_CONFIG = {
+  users: {
+    table: "users",
+    listSql: "SELECT * FROM users ORDER BY id ASC",
+    getSql: "SELECT * FROM users WHERE id = ?",
+    deleteSql: "DELETE FROM users WHERE id = ?",
+    map: (row) => publicUser(mapUser(row)),
+    update(record, body) {
+      const next = {
+        username: String(body.username ?? record.username).trim(),
+        email: String(body.email ?? record.email).trim(),
+        is_active: body.is_active ? 1 : 0,
+        is_admin: body.is_admin ? 1 : 0
+      };
+      db.prepare(`
+        UPDATE users
+        SET username = ?, email = ?, is_active = ?, is_admin = ?, updated_at = ?
+        WHERE id = ?
+      `).run(next.username, next.email, next.is_active, next.is_admin, now(), record.id);
+    }
+  },
+  dictionary: {
+    table: "dictionary_entries",
+    listSql: "SELECT * FROM dictionary_entries ORDER BY id ASC",
+    getSql: "SELECT * FROM dictionary_entries WHERE id = ?",
+    deleteSql: "DELETE FROM dictionary_entries WHERE id = ?",
+    map: mapRow,
+    update(record, body) {
+      const next = {
+        english_word: String(body.english_word ?? record.english_word).trim(),
+        garo_word: String(body.garo_word ?? record.garo_word).trim(),
+        notes: String(body.notes ?? record.notes ?? "").trim(),
+        is_active: body.is_active ? 1 : 0
+      };
+      db.prepare(`
+        UPDATE dictionary_entries
+        SET english_word = ?, garo_word = ?, notes = ?, is_active = ?, updated_at = ?
+        WHERE id = ?
+      `).run(next.english_word, next.garo_word, next.notes, next.is_active, now(), record.id);
+    }
+  },
+  lessons: {
+    table: "lessons",
+    listSql: "SELECT * FROM lessons ORDER BY sort_order ASC, id ASC",
+    getSql: "SELECT * FROM lessons WHERE id = ?",
+    deleteSql: "DELETE FROM lessons WHERE id = ?",
+    map: mapLesson,
+    update(record, body) {
+      const explanation = String(body.explanation ?? record.explanation).trim();
+      const existingContent = JSON.parse(record.content_json || "[]");
+      const nextContent = Array.isArray(existingContent) && existingContent.length > 0
+        ? [{ ...existingContent[0], english: explanation }, ...existingContent.slice(1)]
+        : [{ english: explanation }];
+      db.prepare(`
+        UPDATE lessons
+        SET title = ?, topic = ?, explanation = ?, content_json = ?, sort_order = ?, is_active = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        String(body.title ?? record.title).trim(),
+        String(body.topic ?? record.topic).trim(),
+        explanation,
+        JSON.stringify(nextContent),
+        Number.parseInt(String(body.sort_order ?? record.sort_order), 10) || 0,
+        body.is_active ? 1 : 0,
+        now(),
+        record.id
+      );
+    }
+  },
+  "home-ads": {
+    table: "home_ads",
+    listSql: "SELECT * FROM home_ads ORDER BY sort_order ASC, id ASC",
+    getSql: "SELECT * FROM home_ads WHERE id = ?",
+    deleteSql: "DELETE FROM home_ads WHERE id = ?",
+    map: mapRow,
+    update(record, body) {
+      db.prepare(`
+        UPDATE home_ads
+        SET image_url = ?, description = ?, sort_order = ?, is_active = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        String(body.image_url ?? record.image_url).trim(),
+        String(body.description ?? record.description ?? "").trim(),
+        Number.parseInt(String(body.sort_order ?? record.sort_order), 10) || 0,
+        body.is_active ? 1 : 0,
+        now(),
+        record.id
+      );
+    }
+  },
+  g2: {
+    table: "g2_knowledge",
+    listSql: "SELECT * FROM g2_knowledge ORDER BY id ASC",
+    getSql: "SELECT * FROM g2_knowledge WHERE id = ?",
+    deleteSql: "DELETE FROM g2_knowledge WHERE id = ?",
+    map: mapRow,
+    update(record, body) {
+      db.prepare(`
+        UPDATE g2_knowledge
+        SET question = ?, answer = ?, is_active = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        String(body.question ?? record.question).trim(),
+        String(body.answer ?? record.answer).trim(),
+        body.is_active ? 1 : 0,
+        now(),
+        record.id
+      );
+    }
+  }
+};
+
 function getUserBySession(req) {
   const sessionId = req.cookies[SESSION_COOKIE];
   if (!sessionId) return null;
@@ -247,6 +359,48 @@ app.get("/api/admin/dashboard/", requireUser, requireAdmin, (_req, res) => {
       total_chatbot_questions: adminKnowledge.length
     }
   });
+});
+
+app.get("/api/admin/:section/", requireUser, requireAdmin, (req, res) => {
+  const config = ADMIN_SECTION_CONFIG[req.params.section];
+  if (!config) return res.status(404).json({ error: "Unknown admin section." });
+  const rows = db.prepare(config.listSql).all().map(config.map);
+  res.json({ items: rows });
+});
+
+app.put("/api/admin/:section/:id/", requireUser, requireAdmin, (req, res) => {
+  const config = ADMIN_SECTION_CONFIG[req.params.section];
+  if (!config) return res.status(404).json({ error: "Unknown admin section." });
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid record id." });
+
+  const record = db.prepare(config.getSql).get(id);
+  if (!record) return res.status(404).json({ error: "Record not found." });
+
+  if (req.params.section === "users" && req.user.id === id && req.body.is_admin === false) {
+    return res.status(400).json({ error: "You cannot remove your own admin access." });
+  }
+
+  config.update(record, req.body || {});
+  const updated = db.prepare(config.getSql).get(id);
+  res.json({ item: config.map(updated) });
+});
+
+app.delete("/api/admin/:section/:id/", requireUser, requireAdmin, (req, res) => {
+  const config = ADMIN_SECTION_CONFIG[req.params.section];
+  if (!config) return res.status(404).json({ error: "Unknown admin section." });
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Invalid record id." });
+
+  if (req.params.section === "users" && req.user.id === id) {
+    return res.status(400).json({ error: "You cannot delete your own account." });
+  }
+
+  const record = db.prepare(config.getSql).get(id);
+  if (!record) return res.status(404).json({ error: "Record not found." });
+
+  db.prepare(config.deleteSql).run(id);
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
