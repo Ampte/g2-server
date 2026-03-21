@@ -58,6 +58,7 @@ const ADMIN_SECTION_CONFIG = {
     listSql: "SELECT * FROM users ORDER BY id ASC",
     getSql: "SELECT * FROM users WHERE id = ?",
     deleteSql: "DELETE FROM users WHERE id = ?",
+    allowCreate: false,
     map: (row) => publicUser(mapUser(row)),
     update(record, body) {
       const next = {
@@ -78,7 +79,23 @@ const ADMIN_SECTION_CONFIG = {
     listSql: "SELECT * FROM dictionary_entries ORDER BY id ASC",
     getSql: "SELECT * FROM dictionary_entries WHERE id = ?",
     deleteSql: "DELETE FROM dictionary_entries WHERE id = ?",
+    allowCreate: true,
     map: mapRow,
+    create(body) {
+      const timestamp = now();
+      const result = db.prepare(`
+        INSERT INTO dictionary_entries (english_word, garo_word, notes, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        String(body.english_word || "").trim(),
+        String(body.garo_word || "").trim(),
+        String(body.notes || "").trim(),
+        body.is_active ? 1 : 0,
+        timestamp,
+        timestamp
+      );
+      return db.prepare("SELECT * FROM dictionary_entries WHERE id = ?").get(result.lastInsertRowid);
+    },
     update(record, body) {
       const next = {
         english_word: String(body.english_word ?? record.english_word).trim(),
@@ -98,7 +115,26 @@ const ADMIN_SECTION_CONFIG = {
     listSql: "SELECT * FROM lessons ORDER BY sort_order ASC, id ASC",
     getSql: "SELECT * FROM lessons WHERE id = ?",
     deleteSql: "DELETE FROM lessons WHERE id = ?",
+    allowCreate: true,
     map: mapLesson,
+    create(body) {
+      const explanation = String(body.explanation || "").trim();
+      const timestamp = now();
+      const result = db.prepare(`
+        INSERT INTO lessons (title, topic, explanation, content_json, sort_order, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        String(body.title || "").trim(),
+        String(body.topic || "").trim(),
+        explanation,
+        JSON.stringify([{ english: explanation }]),
+        Number.parseInt(String(body.sort_order || 0), 10) || 0,
+        body.is_active ? 1 : 0,
+        timestamp,
+        timestamp
+      );
+      return db.prepare("SELECT * FROM lessons WHERE id = ?").get(result.lastInsertRowid);
+    },
     update(record, body) {
       const explanation = String(body.explanation ?? record.explanation).trim();
       const existingContent = JSON.parse(record.content_json || "[]");
@@ -126,7 +162,23 @@ const ADMIN_SECTION_CONFIG = {
     listSql: "SELECT * FROM home_ads ORDER BY sort_order ASC, id ASC",
     getSql: "SELECT * FROM home_ads WHERE id = ?",
     deleteSql: "DELETE FROM home_ads WHERE id = ?",
+    allowCreate: true,
     map: mapRow,
+    create(body) {
+      const timestamp = now();
+      const result = db.prepare(`
+        INSERT INTO home_ads (image_url, description, sort_order, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        String(body.image_url || "").trim(),
+        String(body.description || "").trim(),
+        Number.parseInt(String(body.sort_order || 0), 10) || 0,
+        body.is_active ? 1 : 0,
+        timestamp,
+        timestamp
+      );
+      return db.prepare("SELECT * FROM home_ads WHERE id = ?").get(result.lastInsertRowid);
+    },
     update(record, body) {
       db.prepare(`
         UPDATE home_ads
@@ -147,7 +199,22 @@ const ADMIN_SECTION_CONFIG = {
     listSql: "SELECT * FROM g2_knowledge ORDER BY id ASC",
     getSql: "SELECT * FROM g2_knowledge WHERE id = ?",
     deleteSql: "DELETE FROM g2_knowledge WHERE id = ?",
+    allowCreate: true,
     map: mapRow,
+    create(body) {
+      const timestamp = now();
+      const result = db.prepare(`
+        INSERT INTO g2_knowledge (question, answer, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        String(body.question || "").trim(),
+        String(body.answer || "").trim(),
+        body.is_active ? 1 : 0,
+        timestamp,
+        timestamp
+      );
+      return db.prepare("SELECT * FROM g2_knowledge WHERE id = ?").get(result.lastInsertRowid);
+    },
     update(record, body) {
       db.prepare(`
         UPDATE g2_knowledge
@@ -277,12 +344,12 @@ app.post("/api/translate/", (req, res) => {
     return res.status(400).json({ error: "Text, source, and target are required." });
   }
   const matched = findDictionaryMatch(text, source, target);
-  const translated_text =
-    matched ||
-    (source === "en" && target === "garo"
-      ? `A'chik: ${String(text).trim()}`
-      : `English: ${String(text).trim()}`);
-  res.json({ translated_text });
+  if (!matched) {
+    return res.status(404).json({
+      error: "the given word is not found in the database please check the spelling and try again"
+    });
+  }
+  res.json({ translated_text: matched });
 });
 
 app.get("/api/lessons/", (_req, res) => {
@@ -333,7 +400,7 @@ app.post("/api/g2/ask/", (req, res) => {
     answer = "Start with greetings, simple vocabulary, and a few daily conversation phrases.";
   }
   if (!answer) {
-    answer = "Practice a few short words each day, then move into greetings and common conversation.";
+    answer = "Sorry, this is out of my knowledge right now. Please try another question.";
   }
 
   res.json({ answer });
@@ -366,6 +433,17 @@ app.get("/api/admin/:section/", requireUser, requireAdmin, (req, res) => {
   if (!config) return res.status(404).json({ error: "Unknown admin section." });
   const rows = db.prepare(config.listSql).all().map(config.map);
   res.json({ items: rows });
+});
+
+app.post("/api/admin/:section/", requireUser, requireAdmin, (req, res) => {
+  const config = ADMIN_SECTION_CONFIG[req.params.section];
+  if (!config) return res.status(404).json({ error: "Unknown admin section." });
+  if (!config.allowCreate) {
+    return res.status(400).json({ error: "Create is not supported for this section." });
+  }
+
+  const created = config.create(req.body || {});
+  res.status(201).json({ item: config.map(created) });
 });
 
 app.put("/api/admin/:section/:id/", requireUser, requireAdmin, (req, res) => {
