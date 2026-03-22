@@ -237,6 +237,14 @@ const ADMIN_SECTION_CONFIG = {
         record.id
       );
     }
+  },
+  feedback: {
+    table: "feedback_entries",
+    listSql: "SELECT * FROM feedback_entries ORDER BY id DESC",
+    getSql: "SELECT * FROM feedback_entries WHERE id = ?",
+    deleteSql: "DELETE FROM feedback_entries WHERE id = ?",
+    allowCreate: false,
+    map: mapRow
   }
 };
 
@@ -614,6 +622,24 @@ app.post("/api/translate/", (req, res) => {
   });
 });
 
+app.post("/api/feedback/", requireUser, (req, res) => {
+  const subject = String(req.body?.subject || "").trim();
+  const message = String(req.body?.message || "").trim();
+
+  if (!subject || !message) {
+    return res.status(400).json({ error: "Subject and message are required." });
+  }
+
+  const timestamp = now();
+  const result = db.prepare(`
+    INSERT INTO feedback_entries (user_id, username, subject, message, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(req.user.id, req.user.username, subject, message, timestamp);
+
+  const entry = db.prepare("SELECT * FROM feedback_entries WHERE id = ?").get(result.lastInsertRowid);
+  res.status(201).json({ item: mapRow(entry) });
+});
+
 app.get("/api/lessons/", (_req, res) => {
   const rows = db.prepare(`
     SELECT * FROM lessons
@@ -674,6 +700,7 @@ app.get("/api/admin/dashboard/", requireUser, requireAdmin, (_req, res) => {
   const adminLessons = db.prepare("SELECT * FROM lessons ORDER BY sort_order ASC, id ASC").all().map(mapLesson);
   const adminAds = db.prepare("SELECT * FROM home_ads ORDER BY sort_order ASC, id ASC").all().map(mapRow);
   const adminKnowledge = db.prepare("SELECT * FROM g2_knowledge ORDER BY id ASC").all().map(mapRow);
+  const adminFeedback = db.prepare("SELECT * FROM feedback_entries ORDER BY id DESC").all().map(mapRow);
 
   res.json({
     users: adminUsers,
@@ -681,11 +708,13 @@ app.get("/api/admin/dashboard/", requireUser, requireAdmin, (_req, res) => {
     lessons: adminLessons,
     ads: adminAds,
     g2: adminKnowledge,
+    feedback: adminFeedback,
     stats: {
       total_users: adminUsers.length,
       total_dictionary_words: adminDictionary.length,
       total_learning_topics: adminLessons.length,
-      total_chatbot_questions: adminKnowledge.length
+      total_chatbot_questions: adminKnowledge.length,
+      total_feedback_entries: adminFeedback.length
     }
   });
 });
