@@ -278,26 +278,26 @@ function clearSession(req, res) {
   res.clearCookie(SESSION_COOKIE);
 }
 
-function findDictionaryMatch(text, from, to) {
+function findDictionaryMatches(text, from, to) {
   const normalized = String(text || "").trim().toLowerCase();
-  if (!normalized) return "";
+  if (!normalized) return [];
   if (from === "en" && to === "garo") {
-    const row = db.prepare(`
+    const rows = db.prepare(`
       SELECT garo_word FROM dictionary_entries
       WHERE is_active = 1 AND lower(english_word) = ?
-      LIMIT 1
-    `).get(normalized);
-    return row?.garo_word || "";
+      ORDER BY id ASC
+    `).all(normalized);
+    return rows.map((row) => row.garo_word).filter(Boolean);
   }
   if (from === "garo" && to === "en") {
-    const row = db.prepare(`
+    const rows = db.prepare(`
       SELECT english_word FROM dictionary_entries
       WHERE is_active = 1 AND lower(garo_word) = ?
-      LIMIT 1
-    `).get(normalized);
-    return row?.english_word || "";
+      ORDER BY id ASC
+    `).all(normalized);
+    return rows.map((row) => row.english_word).filter(Boolean);
   }
-  return "";
+  return [];
 }
 
 function importDictionaryCsv(csvText) {
@@ -314,13 +314,6 @@ function importDictionaryCsv(csvText) {
   if (englishIndex === -1 || garoIndex === -1) {
     throw new Error("CSV must include english_word and garo_word columns.");
   }
-
-  const existing = new Set(
-    db.prepare(`
-      SELECT lower(trim(english_word)) AS english_word, lower(trim(garo_word)) AS garo_word
-      FROM dictionary_entries
-    `).all().map((row) => `${row.english_word}|||${row.garo_word}`)
-  );
 
   const insert = db.prepare(`
     INSERT INTO dictionary_entries (english_word, garo_word, notes, is_active, created_at, updated_at)
@@ -343,14 +336,7 @@ function importDictionaryCsv(csvText) {
         continue;
       }
 
-      const key = `${englishWord.toLowerCase()}|||${garoWord.toLowerCase()}`;
-      if (existing.has(key)) {
-        skipped += 1;
-        continue;
-      }
-
       insert.run(englishWord, garoWord, notes, timestamp, timestamp);
-      existing.add(key);
       inserted += 1;
     }
     db.exec("COMMIT");
@@ -440,16 +426,6 @@ function importSectionCsv(section, csvText) {
         const notes = String(getValue(values, "notes") || "").trim();
         const isActive = normalizeCsvBoolean(getValue(values, "is_active"), 1);
         if (!englishWord || !garoWord) {
-          skipped += 1;
-          continue;
-        }
-        const exists = db.prepare(`
-          SELECT id FROM dictionary_entries
-          WHERE lower(trim(english_word)) = lower(trim(?))
-            AND lower(trim(garo_word)) = lower(trim(?))
-          LIMIT 1
-        `).get(englishWord, garoWord);
-        if (exists) {
           skipped += 1;
           continue;
         }
@@ -626,13 +602,16 @@ app.post("/api/translate/", (req, res) => {
   if (!text || !source || !target) {
     return res.status(400).json({ error: "Text, source, and target are required." });
   }
-  const matched = findDictionaryMatch(text, source, target);
-  if (!matched) {
+  const matches = findDictionaryMatches(text, source, target);
+  if (!matches.length) {
     return res.status(404).json({
       error: "the given word is not found in the database please check the spelling and try again"
     });
   }
-  res.json({ translated_text: matched });
+  res.json({
+    translated_text: matches.join(", "),
+    translations: matches
+  });
 });
 
 app.get("/api/lessons/", (_req, res) => {

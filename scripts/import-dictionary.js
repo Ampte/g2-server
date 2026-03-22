@@ -34,13 +34,6 @@ if (englishIndex === -1 || garoIndex === -1) {
   throw new Error("CSV must include english_word and garo_word columns.");
 }
 
-const existing = new Set(
-  db.prepare(`
-    SELECT lower(trim(english_word)) AS english_word, lower(trim(garo_word)) AS garo_word
-    FROM dictionary_entries
-  `).all().map((row) => `${row.english_word}|||${row.garo_word}`)
-);
-
 const insert = db.prepare(`
   INSERT INTO dictionary_entries (english_word, garo_word, notes, is_active, created_at, updated_at)
   VALUES (?, ?, ?, 1, ?, ?)
@@ -62,14 +55,7 @@ try {
       continue;
     }
 
-    const key = `${englishWord.toLowerCase()}|||${garoWord.toLowerCase()}`;
-    if (existing.has(key)) {
-      skipped += 1;
-      continue;
-    }
-
     insert.run(englishWord, garoWord, notes, timestamp, timestamp);
-    existing.add(key);
     inserted += 1;
   }
   db.exec("COMMIT");

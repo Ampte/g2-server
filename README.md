@@ -14,7 +14,7 @@ Express backend for the Garo2 site with SQLite storage.
 - Export the current `dictionary_entries` table: `npm run dictionary:export`
 - Export to a custom file: `npm run dictionary:export -- .\\data\\my-dictionary.csv`
 
-The import command expects at least `english_word` and `garo_word` columns. If a `notes` column is present, it will be imported too. Existing `(english_word, garo_word)` pairs are skipped automatically.
+The import command expects at least `english_word` and `garo_word` columns. If a `notes` column is present, it will be imported too. Duplicate `(english_word, garo_word)` pairs are allowed and will be imported as separate rows.
 
 ## Production env
 
