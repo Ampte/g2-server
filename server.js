@@ -556,7 +556,7 @@ app.post("/api/translate/", (req, res) => {
   const matches = findDictionaryMatches(text, source, target);
   if (!matches.length) {
     return res.status(404).json({
-      error: "the given word is not found in the database please check the spelling and try again"
+      error: "The given word is not found in the database please check the spelling and try again"
     });
   }
   res.json({
@@ -622,7 +622,7 @@ app.post("/api/g2/ask/", (req, res) => {
 
   let answer = directMatch?.answer;
   if (!answer && dictionaryMatch) {
-    answer = `The Garo word for ${dictionaryMatch.english_word} is ${dictionaryMatch.garo_word}.`;
+    answer = `Sorry, I couldn't understand that. Could you rephrase your message?.`;
   }
   if (!answer && /greeting|hello/.test(lower)) {
     answer = "Try 'Na'a simang?' as a warm Garo greeting.";
